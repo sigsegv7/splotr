@@ -100,16 +100,78 @@ type Mp3FrameHeader struct {
 	FrameSync       uint16 // 11 bits
 }
 
-type Mp3Frame []byte
-type Mp3Format interface {
-	// Go does not support struct packing in the way
-	// that C does... However, we can work around this
-	// by writing routines that allow you to deserialize
-	// it.
-	DeserializeFrame(data []byte) Mp3FrameHeader
+type Mp3File struct {
+	Path            Mp3Path  // Path of .mp3 file
+	DurationMin     Mp3Dur   // Duration in min
+	DurationSec     Mp3Dur   // Duration in sec
+	Size            Mp3Size  // Size of file in bytes
+	Contents        []byte   // Raw binary contents
 }
 
-func (fr Mp3Frame) DeserializeFrame() Mp3FrameHeader {
+// Common types
+type Mp3EStream    []byte		// Stream of bytes (elementary stream)
+type Mp3Frame      Mp3EStream	// MP3 frame
+type Mp3Path       Mp3EStream	// MP3 path (i.e., filepath)
+type Mp3Dur        uint32       // Duration
+type Mp3Size       int64
+
+func Load(path Mp3Path) (*Mp3File, error) {
+	var handle *Mp3File = new(Mp3File)
+	var filesize Mp3Size
+	var origstr string
+	var copyrstr string
+	data, err := os.ReadFile(string(path))
+
+	if err != nil {
+		fmt.Println("error: failed to open", path)
+		return nil, err
+	}
+
+	// If the file is not empty then we'll strip the
+	// trailing newline
+	if len(data) > 0 {
+		data[len(data) - 1] = '\x00'
+	}
+
+	handle.Path = Mp3Path(path)
+	handle.DurationMin = 0
+	handle.DurationSec = 0
+
+	// Attempt to fetch how big the file is.
+	filesize, err = GetFileSize(handle.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	handle.Size = filesize
+	handle.Contents = data
+	frame := DeserializeFrame(Mp3Frame(data))
+
+	// Is this an original copy?
+	if frame.Original == 1 {
+		origstr = "yes"
+	} else {
+		origstr = "no"
+	}
+
+	// Is this copyrighted media?
+	if frame.Copyright == 1 {
+		copyrstr = "yes"
+	} else {
+		copyrstr = "no"
+	}
+
+	fmt.Println("Emphasis: ", frame.Emphasis)
+	fmt.Println("Original copy: ", origstr)
+	fmt.Println("Is copyrighted: ", copyrstr)
+	return handle, nil
+}
+
+// Go does not support struct packing in the way
+// that C does... However, we can work around this
+// by writing routines that allow you to deserialize
+// it.
+func DeserializeFrame(fr Mp3Frame) Mp3FrameHeader {
 	var b0 uint8 = fr[0]
 	var b1 uint8 = fr[1]
 	var b2 uint8 = fr[2]
@@ -135,9 +197,19 @@ func (fr Mp3Frame) DeserializeFrame() Mp3FrameHeader {
 	hdr.AudioVer = (b2 >> 3) & 3
 
 	// Extract final bits
-	hdr.FrameSync |= uint16(b2) >> 5
-	hdr.FrameSync |= uint16(b3) << 3
+	hdr.FrameSync |= ((uint16(b2) >> 5) | (uint16(b3) << 3))
 	return *hdr
+}
+
+func GetFileSize(path Mp3Path) (Mp3Size, error) {
+	f, err := os.Open(string(path))
+	st, err := f.Stat()
+	if err != nil {
+		fmt.Println("internal error: Failed to get file size")
+		return -1, err
+	}
+
+	return Mp3Size(st.Size()), nil
 }
 
 
@@ -148,39 +220,17 @@ func Banner() {
 	fmt.Println("Written by Ian M. Moffett")
 }
 
-// Read the contents of a file and return
-// the buffer.
-//
-// @filename: Location of file to dump.
-func Dump(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-
-	if err != nil {
-		fmt.Println("error: failed to open", path)
-		return nil, err
-	}
-
-	// If the file is not empty then we'll strip the
-	// trailing newline
-	if len(data) > 0 {
-		data[len(data) - 1] = '\x00'
-	}
-
-	return data, nil
-}
-
 func main() {
 	Banner()
 	if len(os.Args) < 2 {
 		panic("too few arguments!")
 	}
 
-	path := os.Args[1]
-	data, err := Dump(path)
+	path := Mp3Path(os.Args[1])
+	_, err := Load(path)
 
 	if err != nil {
+		fmt.Println("Could not find ", string(path))
 		panic("bailing")
 	}
-
-	fmt.Println(string(data))
 }
